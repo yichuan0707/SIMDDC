@@ -238,7 +238,7 @@ class EventHandler(object):
         MTTR = sum(ttr_list)/len(ttr_list)
         MTTF = sum(ttf_list)/len(ttf_list)
 
-        unavailability = round(MTTR/(MTTF+MTTF), 5)
+        unavailability = round(MTTR/(MTTR+MTTF), 5)
 
         return format(unavailability, ".4e"), sum(ttr_list)
 

@@ -113,7 +113,9 @@ class SSSDistribute(DataDistribute):
             self._my_assert(disks_per_machine > additions)
             pre_disks_per_machine = disks_per_machine - additions
 
-            machines = self.getAllMachines()
+            machines = []
+            for machines_in_rack in self.getAllMachines():
+                machines += machines_in_rack
             for machine in machines:
                 pre_disks_in_machine = machine.getChildren()[:pre_disks_per_machine]
                 new_disks_in_machine = machine.getChildren()[pre_disks_per_machine:]
@@ -176,25 +178,14 @@ class SSSDistribute(DataDistribute):
 
         return bandwidth_cost
 
-    def systemScaling(self, ts, inc_capcity, inc_slices, style, new_disk_capacity=None, load_balancing=False, e_generators={}):
-        d_generators = []
-        m_generators = []
-        r_generators = []
-        new_generators_names = e_generators.keys()
-
-        if "d_generators" in new_generators_names:
-            d_generators = e_generators["d_generators"]
-        if "m_generators" in new_generators_names:
-            m_generators = e_generators["m_generators"]
-        if "r_generators" in new_generators_names:
-            r_generators = e_generators["r_generators"]
-
+    def systemScaling(self, ts, inc_capcity, inc_slices, style, new_disk_capacity=None, load_balancing=False, d_generators=[], m_generators=[], r_generators=[]):
         self._my_assert(self.slice_locations != [])
 
         additions = self.xml.systemDiskChanges(self.root, ts, inc_capcity, style, new_disk_capacity, d_generators, m_generators, r_generators)
         self._my_assert(inc_slices * self.n <= self._additionSpaceInBlocks(style, additions))
 
         if style in [0, 1, 2, 3]:
+            # this is wrong, slices load balancing shoud be executed in the middle of iteration.
             if load_balancing and style != 0:
                 load_banlancing_cost = self.loadBalancing(style, additions)
             self.distributeSlices(self.root, inc_slices)
@@ -216,7 +207,7 @@ class HierSSSDistribute(SSSDistribute):
     """
     def __init__(self, xml):
         super(HierSSSDistribute, self).__init__(xml)
-        self.r = self.conf.distinct_racks
+        self.r = self.conf.r
         slice_chunks_on_each_rack = self.n/self.r
         if slice_chunks_on_each_rack == 0:
             raise Exception("Distinct_racks is too large")
@@ -226,55 +217,55 @@ class HierSSSDistribute(SSSDistribute):
                 self.slices_chunks_on_racks[i] += 1
 
     def distributeSlices(self, root, increase_slices):
-        disks = []
-
-        self.getAllDisks(root, disks)
+        machines = self.getAllMachines()
         self.total_slices += increase_slices
         for slice_index in xrange(self.total_slices - increase_slices, self.total_slices):
-
             self.slice_locations.append([])
-            #tmp_racks = [item for item in disks]
-
-            self.distributeSliceToDisk(slice_index, disks)
+            self.distributeSliceToDisk(slice_index, machines)
 
             self._my_assert(len(self.slice_locations[slice_index]) == self.n)
 
         self._my_assert(len(self.slice_locations) == self.total_slices)
 
-    def distributeSliceToDisk(self, slice_index, disks):
+    def distributeSliceToDisk(self, slice_index, machines):
         retry_count = 0
+        full_machine_count = 0
         locations = []
 
-        if len(disks) < self.r:
+        if len(machines) < self.r:
             raise Exception("No enough racks left")
 
-        while_flag = True
-        while while_flag:
-            racks_for_slice = sample(disks, self.r)
+        retry_flag = True
+        while retry_flag:
+            racks_for_slice = sample(machines, self.r)
+
+            retry_flag = False
             for i, rack in enumerate(racks_for_slice):
                 if len(rack) < self.slices_chunks_on_racks[i]:
+                    retry_flag = True
                     retry_count += 1
-                    break
-            if retry_count > 100:
-                error_logger.error("Unable to distribute slice " + str(slice_index))
-                raise Exception("Data distribution failed")
-            while_flag = False
+                    if retry_count > 100:
+                        error_logger.error("Unable to distribute slice " + str(slice_index))
+                        raise Exception("Data distribution failed")
+                    else:
+                        break
 
-        # choose disk from the right rack
+        # choose machines from the right rack
         for i, rack in enumerate(racks_for_slice):
-            disks_for_slice = sample(rack, self.slices_chunks_on_racks[i])
-            for disk in disks_for_slice:
+            machines_for_slice = sample(rack, self.slices_chunks_on_racks[i])
+            for machine in machines_for_slice:
+                disk = choice(machine.getChildren())
                 locations.append(disk)
                 disk.addChild(slice_index)
                 slice_count = len(disk.getChildren())
                 if slice_count >= self.conf.max_chunks_per_disk:
                     full_disk_count += 1
                     error_logger.info("One disk is completely full " + str(disk.toString()))
-                    rack.remove(disk)
+                    rack.remove(machine)
 
                 if len(rack) == 0:
-                    error_logger.error("One rack is completely full" + str(disk.getParent().getParent().getID()))
-                    disks.remove(rack)
+                    error_logger.error("One rack is completely full" + str(machine.getParent().getID()))
+                    machines.remove(rack)
         # LZR
         self.slice_locations[slice_index] = locations
 
@@ -282,8 +273,9 @@ class HierSSSDistribute(SSSDistribute):
 if __name__ == "__main__":
     conf = Configuration()
     xml = XMLParser(conf)
-    sss = HierSSSDistribute(xml)
+    sss = SSSDistribute(xml)
     print "disk usage is: ", sss.diskUsage()
+    print "second print machines:", sss.getAllMachines()
     sss.start()
     sss.printTest()
     sss.printToFile()

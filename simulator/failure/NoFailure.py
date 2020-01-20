@@ -6,10 +6,13 @@ from simulator.failure.EventGenerator import EventGenerator
 class NoFailure(EventGenerator):
 
     def __init__(self, name, parameters):
-        pass
+        self.name = name
 
     def getName(self):
-        return "NoFailure"
+        return self.name
+
+    def reset(self, current_time):
+        return current_time
 
     def getCurrentTime(self):
         return Inf

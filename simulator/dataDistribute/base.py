@@ -114,9 +114,9 @@ class DataDistribute(object):
 
         racks = self.getAllRacks()
         for rack in racks:
-            rack_machines = rack.getChildren()
-            for m in rack_machines:
-                machines.append(m)
+            machines.append(rack.getChildren())
+            # for m in rack.getChildren():
+            #     machines.append(m)
 
         return machines
 

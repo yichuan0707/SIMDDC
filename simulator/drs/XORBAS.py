@@ -12,6 +12,17 @@ class XORBAS(LRC):
     Only works when local parity is 1 (m0 = 1).
     """
 
+    # repair traffic in number of blocks
+    def repairTraffic(self, hier=False, d_racks=0):
+        if not hier:
+            return float(self.ORC)
+        else:
+            reduced = float(self.n)/d_racks - 1
+            if reduced > self.ORC:
+                return float(0)
+
+            return float(self.ORC - reduced)
+
     def isRepairable(self, state):
         if isinstance(state, int):
             return False
@@ -90,3 +101,4 @@ if __name__ == "__main__":
     print lrc.isRepairable(state)
     print "single repair cost is:", lrc.repair(state, 7)
     print lrc.parallRepair(state, False)
+    print lrc.repairTraffic(True, 3)

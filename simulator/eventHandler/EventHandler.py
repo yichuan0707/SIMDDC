@@ -256,10 +256,14 @@ class EventHandler(object):
                 else:
                     TTRs.append(duration[1] - duration[0])
 
+<<<<<<< HEAD
         FTs.sort()
         TTFs.append(FTs[0])
         for i in xrange(len(FTs)-1):
             TTFs.append(FTs[i+1] - FTs[i])
+=======
+        unavailability = round(MTTR/(MTTR+MTTF), 5)
+>>>>>>> 2fa16837469d31529bc4e75c8624f4dfaf48f046
 
         return (TTFs, TTRs)
 

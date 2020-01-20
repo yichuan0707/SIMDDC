@@ -46,6 +46,16 @@ class LRC(Base):
     def ORC(self):
         return float(self.k)/float(self.ll)
 
+    def repairTraffic(self, hier=False, d_racks=0):
+        rt = float(self.m1*self.RC + (self.n-self.m1)*self.ORC)/self.n
+        if not hier:
+            return rt
+        else:
+            reduced = float(self.n)/d_racks - 1
+            if reduced > rt:
+                return float(0)
+            return rt - reduced
+
     # state format: [data block states, local parity states in group1,
     # local parity in group 2, global parity blocks]
     def isRepairable(self, state):
@@ -154,3 +164,4 @@ if __name__ == "__main__":
     print lrc.isRepairable(state)
     print lrc.repair(state, 4)
     print lrc.parallRepair(state, True)
+    print lrc.repairTraffic(True, 3)

@@ -1,3 +1,4 @@
+from copy import deepcopy
 from numpy import isnan, isinf, ceil
 
 from simulator.Event import Event
@@ -74,7 +75,8 @@ class DiskWithScrubbing(Disk):
                     self.last_recovery_time)
 
             if failure_time > end_time:
-                for [fail_time, recover_time, flag] in self.failure_intervals:
+                failure_intervals = deepcopy(self.failure_intervals)
+                for [fail_time, recover_time, flag] in failure_intervals:
                     self.addCorrelatedFailures(result_events, fail_time, recover_time, flag)
                 if self.latent_error_generator is None:
                     break
@@ -90,7 +92,8 @@ class DiskWithScrubbing(Disk):
             if recovery_time < 0:
                 raise Exception("recovery time is negative")
 
-            for [fail_time, recover_time, _bool] in self.failure_intervals:
+            failure_intervals = deepcopy(self.failure_intervals)
+            for [fail_time, recover_time, _bool] in failure_intervals:
                 if recovery_time < fail_time:
                     break
                 remove_flag = True
@@ -136,6 +139,8 @@ class DiskWithScrubbing(Disk):
 
         self.recovery_generator.reset(failure_time)
         recovery_time = self.recovery_generator.generateNextEvent(failure_time)
+        # only failure identification time included in recovery_generator, data transfer time must be added
+        recovery_time += self.disk_repair_time
 
         # if recovery falls in one correlated failure interval, combines it with
         # this interval

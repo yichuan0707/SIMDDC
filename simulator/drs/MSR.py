@@ -73,3 +73,4 @@ if __name__ == "__main__":
     print msr.SSC
     print msr.repair(state, 2)
     print msr.parallRepair(state, True)
+    print msr.repairTraffic(True, 7)

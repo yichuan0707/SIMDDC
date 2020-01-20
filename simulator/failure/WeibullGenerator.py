@@ -63,6 +63,26 @@ def main():
     for i in hist.items():
         print str(i[0]) + "  " + str(i[1])
 
+def test():
+    w = WeibullGenerator("wei", {'gamma': 0.0, 'lamda': 9259, 'beta': 1})
+    current_time = 0.0
+    TTF = []
+
+    while current_time <= 87600.0:
+        next_event = w.generateNextEvent(current_time)
+        next_event = float(next_event*10000.0)/10000.0
+        TTF.append(next_event - current_time)
+        current_time = next_event
+
+    TTF.sort()
+    MTTF = sum(TTF)/len(TTF)
+    print TTF
+    print "MTTF:", MTTF
+    return MTTF
+
 
 if __name__ == "__main__":
-    main()
+    res = []
+    for i in xrange(5000):
+        res.append(test())
+    print "MTTF for all:", sum(res)/len(res)

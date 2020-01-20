@@ -27,7 +27,8 @@ from simulator.Configuration import Configuration, CONF_PATH
 class XMLParser(object):
 
     def __init__(self, conf):
-        layer_path = CONF_PATH + os.sep + "layer.xml"
+        layer_path = conf.xml_file_path
+        # layer_path = CONF_PATH + os.sep + "layer.xml"
         self.tree = ET.parse(layer_path)
         self.root = self.tree.getroot()
         self.conf = conf
@@ -184,8 +185,8 @@ class XMLParser(object):
             new_disk_capacity: new disk capacity for style=0, in TBs(10^12 bytes).
             d_generators: the event generators for new disks,
                           [failure_generator, recovery_generator, LSE_generator, scrub_generator]
-            m_generators/r_generators: event generators for new machines or new racks, respectively;
-                                       [failure_generator, recovery_generator]
+            m_generators: [failure_generator, recovery_generator, recovery_generator2]
+            r_generators: [failure_generator, recovery_generator]
         """
         dc_unit = root.getChildren()[0]
         rack_units = dc_unit.getChildren()
@@ -198,8 +199,8 @@ class XMLParser(object):
         actual_disk_capacity = float(disk_capacity) * pow(10, 12) / pow(2, 30) # in GBs
 
         total_disk_count = rack_count * machines_per_rack * disks_per_machine
-
         inc_disks = ceil(float(inc_capacity)*1024*1024/actual_disk_capacity)
+
         if style == 0:
             if new_disk_capacity is None:
                 raise Exception("New disk capacity is not given!")

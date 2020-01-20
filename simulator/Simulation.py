@@ -19,7 +19,7 @@ from simulator.unit.Machine import Machine
 from simulator.unit.Disk import Disk
 
 from simulator.eventHandler.EventHandler import EventHandler
-from simulator.dataDistribute.SSSDistribute import SSSDistribute
+from simulator.dataDistribute.SSSDistribute import SSSDistribute, HierSSSDistribute
 
 DEFAULT = r"/root/SIMDDC/conf/"
 RESULT = r"/root/SIMDDC/log/"
@@ -144,44 +144,97 @@ class Simulation(object):
         interval = upgrade_info[3]
         downtime = upgrade_info[4]
 
-        upgrade_start = round(uniform(0, freq), 3)
+        upgrade_start = round(uniform(0, float(end_time)%freq), 3)
+
+        upgrade_start_times = []
 
         upgrade_times = int((end_time - upgrade_start)/freq)
-        for j in xrange(upgrade_times+1):
+        for j in xrange(1, upgrade_times+1):
             system_upgrade_start = j*freq + upgrade_start
+            upgrade_start_times.append(system_upgrade_start)
 
             if domain_infos[1] == "rack":
                 upgrade_domain_in_racks = int(domain_infos[0])
-                racks = self.distributer.getAllRacks()
-                loops = len(racks)/upgrade_domain_in_racks
-                remainder = len(racks) % upgrade_domain_in_racks
+                machines = self.distributer.getAllMachines()
+                # racks = self.distributer.getAllRacks()
+                loops = len(machines)/upgrade_domain_in_racks
+                remainder = len(machines) % upgrade_domain_in_racks
                 for i in xrange(loops):
-                    for rack in racks[i*upgrade_domain_in_racks:(i+1)*upgrade_domain_in_racks]:
-                        machines = rack.getChildren()
-                        for machine in machines:
-                            start_time = system_upgrade_start + (downtime + interval)*i
+                    start_time = system_upgrade_start + (downtime + interval)*i
+                    upgrade_machines = machines[i*upgrade_domain_in_racks:(i+1)*upgrade_domain_in_racks]
+                    for item in upgrade_machines:
+                        for machine in item:
                             machine.addFailureInterval([start_time, start_time + downtime, False])
                 if remainder != 0:
-                    for rack in racks[-remainder:]:
-                        machines = rack.getChildren()
-                        for machine in machines:
-                            start_time = system_upgrade_start + (downtime + interval) * loop_times
+                    start_time = system_upgrade_start + (downtime + interval) * loops
+                    upgrade_machines = machines[-remainder:]
+                    for item in upgrade_machines:
+                        for machine in item:
                             machine.addFailureInterval([start_time, start_time + downtime, False])
+            elif domain_infos[1] == "machine":
+                # machines per rack is divisible by upgrade_domain_in_machines
+                upgrade_domain_in_machines = int(domain_infos[0])
+                machines_in_racks = self.distributer.getAllMachines()
+                rack_count = len(machines_in_racks)
+                machines_per_rack = len(machines_in_racks[0])
+                loops = (rack_count*machines_per_rack)/upgrade_domain_in_machines
+                remainder = (rack_count*machines_per_rack)%upgrade_domain_in_machines
+
+                machines = []
+                for rack in machines_in_racks:
+                    machines += rack
+
+                for i in xrange(loops):
+                    # rack_index = i*upgrade_domain_in_machines/machines_per_rack
+                    # current_rack = machines[rack_index]
+                    start_time = system_upgrade_start + (downtime + interval)*i
+                    for a in xrange(upgrade_domain_in_machines):
+                        machine = machines[a + i*upgrade_domain_in_machines]
+                        machine.addFailureInterval([start_time, start_time+downtime, False])
+                if remainder != 0:
+                    # current_rack = machines[-1]
+                    start_time = system_upgrade_start + (downtime + interval) * loops
+                    # upgrade domain in "machine" means remainder <= machines_per_rack
+                    for j in xrange(-remainder, 0):
+                        machine = machines[j]
+                        machine.addFailureInterval([start_time, start_time+downtime, False])
             else:
                 pass
 
-    def addSystemScaling(self, scale_info):
-        e_generators = {}
-        if scale_info[-1] != None or scale_info[-2] != None:
-            e_generators["d_generators"] = scale_info[-2:]
+        return upgrade_start_times
 
+    # check style
+    # 1: check and repair lost chunks which will be offline
+    # 2: check and repair unavailable and lost chunks which will be offline
+    # 3: check and repair lost chunks on stripes which will be offline
+    # 4: check and repair unavailable and lost chunks on stripes which will be offline
+    # 5: full system check and repeir lost chunks
+    # 6: full system check and repair for unavailable and lost chunks
+    def addUpgradeCheckEvents(self, events, upgrade_start_times, check_style):
+        machines_in_racks = self.distributer.getAllMachines()
+        machines = []
+        for item in machines_in_racks:
+            machines += item
+        root = self.distributer.getRoot()
+        if check_style in [1, 2, 3, 4]:
+            for machine in machines:
+                for upgrade_start_time, _null1, _null2 in machine.failure_intervals:
+                    upgrade_check_event = Event(Event.EventType.UpgradeCheck, upgrade_start_time-1E-5, machine, check_style)
+                    events.addEvent(upgrade_check_event)
+        elif check_style in [5, 6]:
+            for upgrade_time in upgrade_start_times:
+                full_system_check_event = Event(Event.EventType.UpgradeCheck, upgrade_time-1E-5, root, check_style)
+                events.addEvent(full_system_check_event)
+        else:
+            raise Exception("Incorrect upgrade check style.")
 
-        start_time = scale_info[0] + scale_info[4]
-        end_time = start_time + float(scale_info[3])/scale_info[5]
+    def addSystemScaling(self, info):
+        start_time = info[0] + info[4]
+        end_time = start_time + float(info[3])/info[5]
         # interval formats: start_time, end_time, rate, style
-        self.scaling_intervals.append((start_time, end_time, scale_info[5], scale_info[1]))
-        self.distributer.systemScaling(scale_info[0], scale_info[2], scale_info[3], scale_info[1],
-                                       scale_info[7], scale_info[6], {})
+        self.scaling_intervals.append((start_time, end_time, info[5], info[1]))
+        self.distributer.systemScaling(info[0], info[2], info[3], info[1], info[7],
+                                       info[6], info[8], info[9], info[10])
 
     def writeToCSV(self, res_file_path, contents):
         with open(res_file_path, "w") as fp:
@@ -192,15 +245,23 @@ class Simulation(object):
     def run(self):
         conf = Configuration(self.conf_path)
         xml = XMLParser(conf)
-        self.distributer = SSSDistribute(xml)
+        if conf.hier:
+            self.distributer = HierSSSDistribute(xml)
+        else:
+            self.distributer = SSSDistribute(xml)
         self.conf = self.distributer.returnConf()
 
         self.event_handler = EventHandler
         self.distributer.start()
+        events_handled = 0
+        events = EventQueue()
 
         if self.conf.system_upgrade:
             for info in self.conf.system_upgrade_infos:
-                self.addSystemUpgrade(info, self.conf.total_time)
+                if info[0] == 1:
+                    upgrade_start_times = self.addSystemUpgrade(info, self.conf.total_time)
+                    if info[-1] is not None:
+                        self.addUpgradeCheckEvents(events, upgrade_start_times, info[-1])
         if self.conf.correlated_failures:
             for info in self.conf.correlated_failures_infos:
                 for i in xrange(10):
@@ -215,13 +276,12 @@ class Simulation(object):
         info_logger.info("disk usage is: " + str(self.distributer.diskUsage()*100) + "%\n")
         self.distributer.getRoot().printAll()
 
-        events_handled = 0
-        events = EventQueue()
-
         root = self.distributer.getRoot()
         root.generateEvents(events, 0, self.conf.total_time, True)
+        for ts in self.conf.upgrade_ts:
+            full_system_check_event = Event(Event.EventType.UpgradeCheck, ts, root, 6)
+            events.addEvent(full_system_check_event)
 
-        # if False:
         if self.conf.event_file != None:
             events_file = self.conf.event_file + '-' + self.ts
             events.printAll(events_file, "Iteration number: "+str(self.iteration_times))
@@ -247,12 +307,16 @@ class Simulation(object):
 
         for i in xrange(num_iterations):
             result = self.run()
-            contents.append([result.data_loss_prob, result.unavailable_prob, result.total_repair_transfers] +
-                            list(result.undurable_count_details) + [str(result.queue_times)+'*'+str(result.avg_queue_time)])
+            contents.append([result.PDL, result.NOMDL, result.MTTR, result.MTBF, result.PUA, result.PUS, result.TRT])
+            unavailable_slices = result.unavailable_slice_durations.keys()
+            for slice_index in unavailable_slices:
+                print "slice %d unavailable duration %s" % (slice_index, str(result.unavailable_slice_durations[slice_index]))
 
         res_file_path = RESULT + self.conf.data_redundancy + '-'
         if self.conf.system_upgrade:
-            res_file_path += 'upgrade-'
+            res_file_path += "upgrade-"
+        if self.conf.system_scaling:
+            res_file_path += "scaling-"
         res_file_path += self.ts + ".csv"
         self.writeToCSV(res_file_path, contents)
 

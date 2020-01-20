@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 from simulator.unit.Unit import Unit
 from simulator.Event import Event
 
@@ -17,7 +19,8 @@ class Rack(Unit):
         last_recover_time = start_time
 
         if self.failure_generator is None:
-            for [fail_time, recover_time, flag] in self.failure_intervals:
+            failure_intervals = deepcopy(self.failure_intervals)
+            for [fail_time, recover_time, flag] in failure_intervals:
                 self.addCorrelatedFailures(result_events, fail_time, recover_time, flag)
             for u in self.children:
                 u.generateEvents(result_events, start_time, end_time, True)
@@ -34,7 +37,8 @@ class Rack(Unit):
                 current_time)
             assert (recovery_time > failure_time)
             if current_time > end_time:
-                for [fail_time, recover_time, flag] in self.failure_intervals:
+                failure_intervals = deepcopy(self.failure_intervals)
+                for [fail_time, recover_time, flag] in failure_intervals:
                     self.addCorrelatedFailures(result_events, fail_time, recover_time, flag)
                 for u in self.children:
                     u.generateEvents(result_events, last_recover_time,

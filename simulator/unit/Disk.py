@@ -1,5 +1,7 @@
-from simulator.unit.Unit import Unit
+from copy import deepcopy
 from numpy import isnan, isinf
+
+from simulator.unit.Unit import Unit
 from simulator.Event import Event
 from simulator.Configuration import Configuration
 
@@ -34,7 +36,8 @@ class Disk(Unit):
                 current_time)
             current_time = failure_time
             if current_time > end_time:
-                for [fail_time, recover_time, flag] in self.failure_intervals:
+                failure_intervals = deepcopy(self.failure_intervals)
+                for [fail_time, recover_time, flag] in failure_intervals:
                     self.addCorrelatedFailures(result_events, fail_time, recover_time, flag)
                 break
 
@@ -42,10 +45,11 @@ class Disk(Unit):
             recovery_time = self.recovery_generator.generateNextEvent(
                 current_time)
             assert (recovery_time > failure_time)
-            # for disk repair, detection and identification have been given by recovery generator, so we add data transferring time here.
+            # only failure identification time has been given by recovery generator, we add data transfer time here.
             recovery_time += self.disk_repair_time
 
-            for [fail_time, recover_time, _bool] in self.failure_intervals:
+            failure_intervals = deepcopy(self.failure_intervals)
+            for [fail_time, recover_time, _bool] in failure_intervals:
                 if recovery_time < fail_time:
                     break
                 remove_flag = True

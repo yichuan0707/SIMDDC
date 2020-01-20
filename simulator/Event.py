@@ -13,9 +13,10 @@ class Event(object):
         LatentDefect = 5
         LatentRecovered = 6
         RAFIRecovered = 7
+        UpgradeCheck = 8
         # ScrubStart = 6
         # ScrubComplete = 7
-        End = 8
+        End = 9
 
     def __init__(self, e_type, time, unit, info=-100, ignore=False,
                  next_recovery_time=0):

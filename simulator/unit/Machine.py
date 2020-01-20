@@ -1,5 +1,6 @@
 from random import random, uniform
 from math import ceil
+from copy import deepcopy
 
 from simulator.unit.Unit import Unit
 from simulator.Event import Event
@@ -44,6 +45,9 @@ class Machine(Unit):
         else:
             super(Machine, self).addEventGenerator(generator)
 
+    def getEventGenerators(self):
+        return [self.failure_generator, self.recovery_generator, self.recovery_generator2]
+
     def addCorrelatedFailures(self, result_events, failure_time, recovery_time, lost_flag):
         if lost_flag:
             failure_type = 3
@@ -71,7 +75,8 @@ class Machine(Unit):
         last_recover_time = start_time
 
         if self.failure_generator is None:
-            for [fail_time, recover_time, flag] in self.failure_intervals:
+            failure_intervals = deepcopy(self.failure_intervals)
+            for [fail_time, recover_time, flag] in failure_intervals:
                 self.addCorrelatedFailures(result_events, fail_time, recover_time, flag)
             for u in self.children:
                 u.generateEvents(result_events, start_time, end_time, True)
@@ -94,7 +99,8 @@ class Machine(Unit):
                 current_time)
             current_time = failure_time
             if current_time > end_time:
-                for [fail_time, recover_time, flag] in self.failure_intervals:
+                failure_intervals = deepcopy(self.failure_intervals)
+                for [fail_time, recover_time, flag] in failure_intervals:
                     self.addCorrelatedFailures(result_events, fail_time, recover_time, flag)
                 for u in self.children:
                     u.generateEvents(result_events, last_recover_time,
@@ -112,7 +118,8 @@ class Machine(Unit):
                 current_time)
             assert (recovery_time > failure_time)
 
-            for [fail_time, recover_time, _bool] in self.failure_intervals:
+            failure_intervals = deepcopy(self.failure_intervals)
+            for [fail_time, recover_time, _bool] in failure_intervals:
                 if recovery_time < fail_time:
                     break
                 remove_flag = True

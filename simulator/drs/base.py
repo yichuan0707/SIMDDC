@@ -47,8 +47,15 @@ class Base(object):
         return self.k
 
     # repair traffic in number of blocks
-    def repairTraffic(self):
-        return float(self.ORC)
+    def repairTraffic(self, hier=False, d_racks=0):
+        if not hier:
+            return float(self.ORC)
+        else:
+            reduced = float(self.n)/d_racks - 1
+            if reduced > self.ORC:
+                return float(0)
+
+            return float(self.ORC - reduced)
 
     # Check 'state' can be recovered or not. If can be recovered, return the
     # corresponding repair cost, or return False.

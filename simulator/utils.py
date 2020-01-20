@@ -1,3 +1,13 @@
+from simulator.failure.WeibullGenerator import WeibullGenerator
+from simulator.failure.Constant import Constant
+from simulator.failure.GaussianGenerator import GaussianGenerator
+from simulator.failure.Uniform import Uniform
+from simulator.failure.NoFailure import NoFailure
+from simulator.failure.Real import Real
+from simulator.failure.Period import Period
+from simulator.failure.GFSAvailability import GFSAvailability
+from simulator.failure.GFSAvailability2 import GFSAvailability2
+
 
 def splitMethod(string, split_with=','):
     s = string.strip()
@@ -24,6 +34,46 @@ def splitFloatMethod(string, split_with=','):
 def extractDRS(string):
     drs = splitMethod(string, '_')
     return [drs[0]] + [int(item) for item in drs[1:]]
+
+def returnEventGenerator(name, string):
+    if string is None:
+        return None
+
+    parameters = {}
+
+    g_parameters = splitMethod(string, '_')
+    generator = g_parameters[0].lower()
+    if generator == "weibullgenerator":
+        parameters["gamma"] = float(g_parameters[1])
+        parameters["lamda"] = float(g_parameters[2])
+        parameters["beta"] = float(g_parameters[3])
+        return WeibullGenerator(name, parameters)
+    elif generator == "gaussiangenerator":
+        parameters["mean"] = float(g_parameters[1])
+        parameters["stddev"] = float(g_parameters[2])
+        parameters["minval"] = float(g_parameters[3])
+        return GaussianGenerator(name, parameters)
+    elif generator == "constant":
+        parameters["freq"] = float(g_parameters[1])
+        return Constant(name, parameters)
+    elif generator == "uniform":
+        parameters["lamda"] = float(g_parameters[1])
+        return Uniform(name, parameters)
+    elif generator == "nofailure":
+        return NoFailure(name, parameters)
+    elif generator == "real":
+        parameters["gamma"] = float(g_parameters[1])
+        parameters["lamda"] = float(g_parameters[2])
+        return Real(name, parameters)
+    elif generator == "period":
+        parameters["gamma"] = float(g_parameters[1])
+        return Period(name, parameters)
+    elif generator == "gfsavailability":
+        return GFSAvailability(name, parameters)
+    elif generator == "gfsavailability2":
+        return GFSAvailability2(name, parameters)
+    else:
+        raise Exception("Invalid event class name")
 
 
 class FIFO(object):

@@ -66,6 +66,10 @@ class EventHandler(object):
             # if self.bandwidth_contention == "FIFO":
             self.contention_model = FIFO(self.distributer.getAllRacks())
 
+        # False means no scaling during mission time;
+        # True means there is scaling during mission time.
+        self.scaling = self.conf.system_scaling
+
         # for each block, 1 means Normal, 0 means Unavailable, -1 means Lost(caused by disk or node lost),
         # -2 means Lost(caused by LSE)
         self.status = [[1 for i in xrange(self.n)] for j in xrange(self.total_slices)]
@@ -76,6 +80,11 @@ class EventHandler(object):
         # example: (13567, 12456.78, "disk 137")
         self.undurable_slice_infos = []
         self.undurable_slice_count = 0
+        self.current_slice_degraded = 0
+        self.current_avail_slice_degraded = 0
+
+        # slice_index:[[failure time, recovery time],...]
+        self.unavailable_slice_durations = {}
 
         # There is an anomaly (logical bug?) that is possible in the current
         # implementation:
@@ -88,9 +97,6 @@ class EventHandler(object):
         # This count -- anomalousAvailableCount -- keeps track of how many
         # times this happens
         self.anomalous_available_count = 0
-
-        self.current_slice_degraded = 0
-        self.current_avail_slice_degraded = 0
 
         # instantaneous total recovery b/w, in MB/hr, not to exceed above cap
         self.current_recovery_bandwidth = 0
@@ -120,12 +126,11 @@ class EventHandler(object):
         self.total_repair_transfers = 0
         self.total_optimal_repairs = 0
 
-        self.slices_degraded_list = []
-        self.slices_degraded_avail_list = []
+        # self.slices_degraded_list = []
+        # self.slices_degraded_avail_list = []
 
-        self.unavailable_durations = []
         # degraded slice statistic dict
-        self.slices_degraded_durations = {}
+        # self.slices_degraded_durations = {}
 
     def _my_assert(self, expression):
         if not expression:
@@ -198,6 +203,18 @@ class EventHandler(object):
                 state.append(s)
         return not self.drs_handler.isRepairable(state)
 
+    def avgTotalSlices(self):
+        if not self.scaling:
+            return self.total_slices
+        else:
+            total = 0.0
+            for [a, b, c, d] in self.total_slices_table:
+                if d == 0:
+                    total += (b-a)*c
+                else:
+                    # f(x) = c + d(x-a) = dx + (c-ad), a<=x<=b
+                    total += pow(b-a,2)*d/2 + (c-a*d)*(b-a)
+            return round(float(total)/self.end_time, 5)
 
     # calculate the data unavailable probability
     def calUnavailProb(self):
@@ -215,32 +232,36 @@ class EventHandler(object):
 
         return format(total_unavailable_durations/total_slices_durations, ".4e")
 
-    # unvailability = MTTR/MTBF = MTTR/(MTTF + MTTR)
-    def calUA(self):
-        ttf_list = []
-        ft_list = []
-        ttr_list = []
-        lost = 0
+    # "merge_flag=True" means simultaneous multiple unavailable stripes will
+    # be treated as one unavailable event;
+    # "merge_flag=False" means simultaneous multiple unavailable stripes will be
+    # treated as multiple unavailable event.
+    def processDuration(self, merge_flag):
+        TTFs = []
+        # failure timestamps
+        FTs = []
+        TTRs = []
 
-        if len(self.unavailable_durations) == 0:
-            return format(0.0, ".4e"), 0.0
+        unavail_slices = self.unavailable_slice_durations.keys()
+        if len(unavail_slices) == 0:
+            return [], []
 
-        for (f_time, r_time) in self.unavailable_durations:
-            print f_time, r_time
-            ft_list.append(f_time)
-            ttr_list.append(r_time - f_time)
+        for slice_index in unavail_slices:
+            for duration in self.unavailable_slice_durations[slice_index]:
+                if merge_flag and (duration[0] in FTs):
+                    continue
+                FTs.append(duration[0])
+                if len(duration) == 1:
+                    TTRs.append(self.end_time - duration[0])
+                else:
+                    TTRs.append(duration[1] - duration[0])
 
-        ft_list.sort()
-        ttf_list.append(ft_list[0])
-        for i in xrange(len(ft_list) - 1):
-            ttf_list.append(ft_list[i+1] - ft_list[i])
+        FTs.sort()
+        TTFs.append(FTs[0])
+        for i in xrange(len(FTs)-1):
+            TTFs.append(FTs[i+1] - FTs[i])
 
-        MTTR = sum(ttr_list)/len(ttr_list)
-        MTTF = sum(ttf_list)/len(ttf_list)
-
-        unavailability = round(MTTR/(MTTF+MTTF), 5)
-
-        return format(unavailability, ".4e"), sum(ttr_list)
+        return (TTFs, TTRs)
 
     def calUndurableDetails(self):
         lost_caused_by_LSE = 0
@@ -277,7 +298,7 @@ class EventHandler(object):
                 if ts <= t:
                     undurable += 1
 
-        NOMDL = undurable * (self.conf.chunk_size * pow(2, 20) * self.k) / (self.conf.total_active_storage * pow(2, 10))
+        NOMDL = undurable * (self.conf.chunk_size * pow(2, 20)) / (self.conf.total_active_storage * pow(2, 10))
         return NOMDL
 
     # calculate current total slices to cope with system scaling.
@@ -311,6 +332,8 @@ class EventHandler(object):
             self.handleEagerRecoveryStart(e.getUnit(), e.getTime(), e, queue)
         elif e.getType() == Event.EventType.EagerRecoveryInstallment:
             self.handleEagerRecoveryInstallment(e.getUnit(), e.getTime(), e)
+        elif e.getType() == Event.EventType.UpgradeCheck:
+            self.handleUpgradeCheck(e.getUnit(), e.getTime(), e, queue)
         else:
             raise Exception("Unknown event: " + e.getType())
 
@@ -366,10 +389,19 @@ class EventHandler(object):
                     repairable_current = self.isRepairable(slice_index)
                     if repairable_before and not repairable_current:
                         self.unavailable_slice_count += 1
-                        if (time, e.next_recovery_time) not in self.unavailable_durations:
-                            self.unavailable_durations.append((time, e.next_recovery_time))
+                        if slice_index in self.unavailable_slice_durations.keys():
+                            self.unavailable_slice_durations[slice_index].append([time])
+                        else:
+                            self.unavailable_slice_durations[slice_index] = [[time]]
+                        # if one machine failure causes multiple stripes unavailable, or
+                        # correlated failures like upgrades result multiple stripes unavailable,
+                        # many TTF=0 will be inserted into self.TTFs, decrease MTTF and MTBF
+                        # self.current_unavailable_slices[slice_index] = time
+                        # self.TTFs.append(time-self.last_failure_ts)
+                        # self.last_failure_ts = time
 
                     if e.info == 3:
+                        # lost stripes have been recorded in TTFs.
                         if self.isLost(slice_index):
                             info_logger.info(
                                 "time: " + str(time) + " slice:" + str(slice_index) +
@@ -404,11 +436,12 @@ class EventHandler(object):
                 self._my_assert(self.durableCount(slice_index) >= 0)
 
                 repairable_current = self.isRepairable(slice_index)
-                # exclude the disk lost caused by node lost, it has already considered in node lost
                 if repairable_before and not repairable_current:
                     self.unavailable_slice_count += 1
-                    if (time, e.next_recovery_time) not in self.unavailable_durations:
-                        self.unavailable_durations.append((time, e.next_recovery_time))
+                    if slice_index in self.unavailable_slice_durations.keys():
+                        self.unavailable_slice_durations[slice_index].append([time])
+                    else:
+                        self.unavailable_slice_durations[slice_index] = [[time]]
 
                 if self.isLost(slice_index):
                     info_logger.info(
@@ -442,13 +475,19 @@ class EventHandler(object):
                         if slice_index >= current_total_slices:
                             continue
                         if self.status[slice_index] == self.lost_slice:
+                            if slice_index in self.unavailable_slice_durations.keys() and \
+                                len(self.unavailable_slice_durations[slice_index][-1]) == 1:
+                                self.unavailable_slice_durations[slice_index][-1].append(time)
                             continue
 
                         if self.availableCount(slice_index) < self.n:
+                            repairable_before = self.isRepairable(slice_index)
                             index = self.slice_locations[slice_index].index(child)
                             if self.status[slice_index][index] == 0:
                                 self.status[slice_index][index] = 1
                             self.sliceRecoveredAvailability(slice_index)
+                            if not repairable_before and self.isRepairable(slice_index):
+                                self.unavailable_slice_durations[slice_index][-1].append(time)
                         elif e.info == 1:  # temp & short failure
                             self.anomalous_available_count += 1
                         else:
@@ -462,6 +501,9 @@ class EventHandler(object):
                         if slice_index >= current_total_slices:
                             continue
                         if self.status[slice_index] == self.lost_slice:
+                            if slice_index in self.unavailable_slice_durations.keys() and \
+                                len(self.unavailable_slice_durations[slice_index][-1]) == 1:
+                                self.unavailable_slice_durations[slice_index][-1].append(time)
                             continue
                         if not self.isRepairable(slice_index):
                             continue
@@ -535,6 +577,9 @@ class EventHandler(object):
                 if slice_index >= current_total_slices:
                     continue
                 if self.status[slice_index] == self.lost_slice:
+                    if slice_index in self.unavailable_slice_durations.keys() and \
+                        len(self.unavailable_slice_durations[slice_index][-1]) == 1:
+                        self.unavailable_slice_durations[slice_index][-1].append(time)
                     continue
                 if not self.isRepairable(slice_index):
                     continue
@@ -609,7 +654,14 @@ class EventHandler(object):
             repairable_current = self.isRepairable(slice_index)
             if repairable_before and not repairable_current:
                 self.unavailable_slice_count += 1
-                self.unavailable_durations.append((time, e.next_recovery_time))
+                if slice_index in self.unavailable_slice_durations.keys():
+                    self.unavailable_slice_durations[slice_index].append([time])
+                else:
+                    self.unavailable_slice_durations[slice_index] = [[time]]
+                # self.current_unavailable_slices[slice_index] = time
+                # self.TTFs.append(time-self.last_failure_ts)
+                # self.last_failure_ts = time
+                # self.unavailable_durations.append((time, e.next_recovery_time))
 
             if self.isLost(slice_index):
                 info_logger.info(
@@ -635,6 +687,9 @@ class EventHandler(object):
                 if slice_index >= current_total_slices:
                     continue
                 if self.status[slice_index] == self.lost_slice:
+                    if slice_index in self.unavailable_slice_durations.keys() and \
+                        len(self.unavailable_slice_durations[slice_index][-1]) == 1:
+                        self.unavailable_slice_durations[slice_index][-1].append(time)
                     continue
 
                 if not self.isRepairable(slice_index):
@@ -653,24 +708,164 @@ class EventHandler(object):
         else:
             raise Exception("Latent Recovered should only happen for disk")
 
+    def handleUpgradeCheck(self, u, time, e, queue):
+        current_total_slices = self.calCurrentTotalSlices(time)
+
+        # 1: check and repair lost chunks which will be offline
+        # 2: check and repair unavailable and lost chunks which will be offline
+        if e.info == 1 or e.info == 2:
+            if not isinstance(u, Machine):
+                raise Exception("Check instance is not Machine instance")
+            diskes = u.getChildren()
+            for disk in diskes:
+                slice_indexes = disk.getChildren()
+                for slice_index in slice_indexes:
+                    if slice_index > current_total_slices:
+                        continue
+                    if self.status[slice_index] == self.lost_slice:
+                        if slice_index in self.unavailable_slice_durations.keys() and \
+                            len(self.unavailable_slice_durations[slice_index][-1]) == 1:
+                            self.unavailable_slice_durations[slice_index][-1].append(time)
+                        continue
+
+                    threshold_crossed = False
+                    rc = 0.0
+                    index = self.slice_locations[slice_index].index(disk)
+                    if self.isRepairable(slice_index):
+                        if self.status[slice_index][index] == -1 or self.status[slice_index][index] == -2:
+                            threshold_crossed = True
+                        if e.info == 2 and self.status[slice_index][index] == 0:
+                            threshold_crossed = True
+                    if threshold_crossed:
+                        rc = self.repair(slice_index, index)
+                        if slice_index in disk.getSlicesHitByLSE():
+                            disk.slices_hit_by_LSE.remove(slice_index)
+                        self.total_repair_transfers += rc
+                        self.sliceRecovered(slice_index)
+        # 3: check and repair lost chunks on slices which will be offline
+        # 4: check and repair unavailable and lost chunks on slices which will be offline
+        elif e.info == 3 or e.info == 4:
+            if not isinstance(u, Machine):
+                raise Exception("Check instance is not Machine instance")
+            diskes = u.getChildren()
+            for disk in diskes:
+                slice_indexes = disk.getChildren()
+                for slice_index in slice_indexes:
+                    if slice_index > current_total_slices:
+                        continue
+                    if self.status[slice_index] == self.lost_slice:
+                        if slice_index in self.unavailable_slice_durations.keys() and \
+                            len(self.unavailable_slice_durations[slice_index][-1]) == 1:
+                            self.unavailable_slice_durations[slice_index][-1].append(time)
+                        continue
+
+                    threshold_crossed = False
+                    rc = 0.0
+                    if self.isRepairable(slice_index):
+                        if e.info == 3 and self.durableCount(slice_index) < self.n:
+                            threshold_crossed = True
+                        if e.info == 4 and self.availableCount(slice_index) < self.n:
+                            threshold_crossed = True
+                    if threshold_crossed:
+                        if e.info == 3:
+                            rc = self.parallelRepair(slice_index, True)
+                        else:
+                            rc = self.parallelRepair(slice_index)
+                        if slice_index in disk.getSlicesHitByLSE():
+                            disk.slices_hit_by_LSE.remove(slice_index)
+                        self.total_repair_transfers += rc
+                        self.sliceRecovered(slice_index)
+        # 5: check and repair all lost slices
+        # 6: check and repair all unavailable and lost slices
+        elif e.info == 5 or e.info == 6:
+            for slice_index, state in enumerate(self.status):
+                if slice_index > current_total_slices:
+                    continue
+                if state == self.lost_slice:
+                    if slice_index in self.unavailable_slice_durations.keys() and \
+                        len(self.unavailable_slice_durations[slice_index][-1]) == 1:
+                        self.unavailable_slice_durations[slice_index][-1].append(time)
+                    continue
+
+                threshold_crossed = False
+                rc = 0.0
+                if self.isRepairable(slice_index):
+                    if e.info == 5 and self.durableCount(slice_index) < self.n:
+                        threshold_crossed = True
+                    if e.info == 6 and self.availableCount(slice_index) < self.n:
+                        threshold_crossed = True
+                if threshold_crossed:
+                    if e.info == 5:
+                        rc = self.parallelRepair(slice_index, True)
+                    else:
+                        rc = self.parallelRepair(slice_index)
+                    self.total_repair_transfers += rc
+                    self.sliceRecovered(slice_index)
+            disks = []
+            self.distributer.getAllDisks(u, disks)
+            for rack_disks in disks:
+                for disk in rack_disks:
+                    disk.slices_hit_by_LSE = []
+            if time in self.conf.upgrade_ts:
+                index = self.conf.upgrade_ts.index(time)
+                if index != len(self.conf.upgrade_ts) - 1:
+                    regenerate_end_ts = self.conf.upgrade_ts[index+1]
+                else:
+                    regenerate_end_ts = self.conf.total_time
+                timestamps = queue.events.keys()
+                timestamps.sort()
+                for ts in timestamps:
+                    if ts > time:
+                        ts_events = queue.events.get(ts)
+                        for e in ts_events:
+                            if isinstance(e.getUnit(), Disk):
+                                queue.events.get(ts).remove(e)
+                                if queue.events.get(ts) == []:
+                                    queue.events.pop(ts)
+                for rack_disks in disks:
+                    for disk in rack_disks:
+                        if self.conf.failure_generator is not None:
+                            disk.failure_generator = self.conf.failure_generator
+                        disk.failure_generator.reset(time)
+                        disk.last_recovery_time = time
+                        if self.conf.lse_generator is not None:
+                            disk.latent_error_generator = self.conf.lse_generator
+                        disk.latent_error_generator.reset(time)
+                        disk.generateEvents(queue, time+1E-5, regenerate_end_ts, True)
+        else:
+            raise Exception("Incorrect upgrade check style")
+
     def end(self):
         ret = Result()
-
-        # data loss probability and data unvailable probability
-        data_loss_prob = format(float(self.undurable_slice_count)/self.total_slices, ".4e")
-        unavailable_prob, downtime = self.calUA()
+        avg_total_slices = self.avgTotalSlices()
 
         Result.undurable_count = self.undurable_slice_count
-        Result.undurable_infos = self.undurable_slice_infos
-        Result.unavailable_durations = self.unavailable_durations
-        Result.data_loss_prob = data_loss_prob
-        Result.unavailable_prob = unavailable_prob
-
+        Result.unavailable_count = self.unavailable_slice_count
+        # Result.undurable_infos = self.undurable_slice_infos
         Result.undurable_count_details = self.calUndurableDetails()
+        Result.unavailable_slice_durations = self.unavailable_slice_durations
+
+        Result.PDL = format(float(self.undurable_slice_count)/avg_total_slices, ".4e")
         Result.NOMDL = self.NOMDL()
 
+        # unavailability from system perspective
+        TTFs, TTRs = self.processDuration(True)
+        if len(TTFs) == 0 or len(TTRs) == 0:
+            Result.MTTR = 0.0
+            Result.MTBF = self.end_time
+            Result.PUA = 0.0
+        else:
+            MTTF = sum(TTFs)/len(TTFs)
+            MTTR = sum(TTRs)/len(TTRs)
+            Result.MTTR = round(MTTR, 4)
+            Result.MTBF = round(MTTR + MTTF, 4)
+            Result.PUA = format(MTTR/(MTTF+MTTR), ".4e")
+        # unavailability from stripe perspective
+        TTFs, TTRs = self.processDuration(False)
+        Result.PUS = format(sum(TTRs)/(self.end_time * avg_total_slices), ".4e")
+
         # repair bandwidth in TiBs
-        Result.total_repair_transfers = format(float(self.total_repair_transfers)/pow(2,20), ".4e")
+        Result.TRT = format(float(self.total_repair_transfers)/pow(2,20), ".4e")
 
         if not self.queue_disable:
             queue_times, avg_queue_time = self.contention_model.statistics()
@@ -692,7 +887,7 @@ class EventHandler(object):
              total skipped latent:%d, total incomplete recovery:%d\n \
              max recovery bandwidth:%f\n \
              undurable_slice_count:%d\n \
-             total repairs:%d, total optimal repairs:%d, downtime:%.5f" %
+             total repairs:%d, total optimal repairs:%d" %
             (self.anomalous_available_count, self.total_latent_failures,
              self.total_scrubs, self.total_scrub_repairs,
              self.total_disk_failures, self.total_disk_repairs,
@@ -707,7 +902,7 @@ class EventHandler(object):
              self.total_incomplete_recovery_attempts,
              self.max_recovery_bandwidth,
              self.undurable_slice_count,
-             self.total_repairs, self.total_optimal_repairs, downtime))
+             self.total_repairs, self.total_optimal_repairs))
 
         return ret
 
@@ -854,6 +1049,9 @@ class EventHandler(object):
             for slice_index in u.slices:
                 # slice_index = s.intValue()
                 if self.status[slice_index] == self.lost_slice:
+                    if slice_index in self.unavailable_slice_durations.keys() and \
+                        len(self.unavailable_slice_durations[slice_index][-1]) == 1:
+                        self.unavailable_slice_durations[slice_index][-1].append(time)
                     continue
 
                 threshold_crossed = False
@@ -906,6 +1104,9 @@ class EventHandler(object):
 
     def handleSliceRecovery(self, slice_index, e, is_durable_failure):
         if self.status[slice_index] == self.lost_slice:
+            if slice_index in self.unavailable_slice_durations.keys() and \
+                len(self.unavailable_slice_durations[slice_index][-1]) == 1:
+                self.unavailable_slice_durations[slice_index][-1].append(e.getTime())
             return 0
 
         recovered = 0
@@ -919,4 +1120,4 @@ class EventHandler(object):
         return recovered
 
 if __name__ == "__main__":
-    pass
+    print "hello"
